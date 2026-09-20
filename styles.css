@@ -1,0 +1,189 @@
+/* All colours come from Obsidian's theme variables, so the dashboard follows
+   whatever theme and light/dark mode the vault is using. */
+
+.vcc-container {
+  padding: 16px;
+  overflow-y: auto;
+  box-sizing: border-box;
+  height: 100%;
+}
+
+.vcc-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  padding-bottom: 10px;
+  margin-bottom: 14px;
+}
+
+.vcc-title {
+  font-size: var(--font-ui-medium);
+  font-weight: 600;
+  color: var(--text-normal);
+}
+
+.vcc-status {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  font-family: var(--font-monospace);
+  white-space: nowrap;
+}
+
+/* ---- metrics ---- */
+
+.vcc-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.vcc-card {
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  padding: 10px 12px;
+}
+
+.vcc-card-warn {
+  border-left: 3px solid var(--text-warning);
+}
+
+.vcc-card-label {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.vcc-card-value {
+  font-size: var(--font-ui-large);
+  font-weight: 600;
+  color: var(--text-normal);
+  margin-top: 2px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- actions ---- */
+
+.vcc-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.vcc-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 10px;
+  font-size: var(--font-ui-smaller);
+  cursor: pointer;
+}
+
+.vcc-btn.vcc-disabled,
+.vcc-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Marks an action that can change files, so it is visible before clicking. */
+.vcc-writes {
+  font-size: 0.68em;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-warning);
+  border: 1px solid var(--text-warning);
+  border-radius: var(--radius-s);
+  padding: 0 4px;
+  opacity: 0.85;
+}
+
+/* ---- custom prompt ---- */
+
+.vcc-custom {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.vcc-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.vcc-btn-run {
+  flex: 0 0 auto;
+}
+
+/* ---- output ---- */
+
+.vcc-panel {
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  padding: 12px;
+}
+
+.vcc-panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: var(--font-ui-smaller);
+  font-weight: 600;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--background-modifier-border);
+  padding-bottom: 8px;
+  margin-bottom: 10px;
+}
+
+.vcc-cancel {
+  font-size: var(--font-ui-smaller);
+  padding: 2px 8px;
+}
+
+.vcc-output {
+  margin: 0;
+  max-height: 340px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.5;
+  color: var(--text-normal);
+  background: var(--background-primary);
+  border-radius: var(--radius-s);
+  padding: 10px;
+}
+
+/* ---- confirm modal ---- */
+
+.vcc-modal-note {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  margin-top: 0;
+}
+
+.vcc-modal-prompt {
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  padding: 10px;
+  font-size: var(--font-ui-smaller);
+  max-height: 180px;
+  overflow: auto;
+}
+
+.vcc-modal-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
