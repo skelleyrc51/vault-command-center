@@ -1,0 +1,9 @@
+{
+  "name": "vault-command-center",
+  "version": "1.1.0",
+  "private": true,
+  "description": "Tests for the Vault Command Center plugin. The plugin itself has no build step and no runtime dependencies; this file exists only to run them.",
+  "scripts": {
+    "test": "node --test"
+  }
+}

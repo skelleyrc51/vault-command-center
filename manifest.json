@@ -1,9 +1,9 @@
 {
   "id": "vault-command-center",
   "name": "Vault Command Center",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "minAppVersion": "1.4.0",
-  "description": "Vault metrics computed from the live index, plus a reviewed launcher for Claude Code actions.",
+  "description": "Vault metrics computed from the live index, plus a reviewed, streaming launcher for Claude Code actions.",
   "author": "Shawn Kelley",
   "isDesktopOnly": true
 }

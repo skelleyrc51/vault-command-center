@@ -1,7 +1,11 @@
-/* All colours come from Obsidian's theme variables, so the dashboard follows
-   whatever theme and light/dark mode the vault is using. */
+/* Colours come from Obsidian's theme variables, so the dashboard follows whatever
+   theme and light/dark mode the vault uses. The one addition is an accent, which
+   falls back to the theme's own orange and then to the standard accent - set
+   --vcc-accent in a snippet to change it. */
 
 .vcc-container {
+  --vcc-accent: var(--color-orange, var(--text-accent));
+  --vcc-accent-dim: var(--color-orange, var(--text-accent));
   padding: 16px;
   overflow-y: auto;
   box-sizing: border-box;
@@ -10,18 +14,39 @@
 
 .vcc-header {
   display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 12px;
+  align-items: center;
+  gap: 8px;
   border-bottom: 1px solid var(--background-modifier-border);
   padding-bottom: 10px;
   margin-bottom: 14px;
 }
 
+/* Short accent dash before the title - the screenshot's ─ lead-in. */
+.vcc-rule {
+  flex: 0 0 14px;
+  height: 2px;
+  background: var(--vcc-accent);
+  opacity: 0.8;
+}
+
 .vcc-title {
-  font-size: var(--font-ui-medium);
-  font-weight: 600;
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-small);
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
   color: var(--text-normal);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vcc-refresh {
+  margin-left: auto;
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  font-size: var(--font-ui-smaller);
+  line-height: 1.4;
 }
 
 .vcc-status {
@@ -34,36 +59,228 @@
 /* ---- metrics ---- */
 
 .vcc-metrics {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  display: flex;
+  flex-direction: column;
   gap: 8px;
-  margin-bottom: 14px;
+  margin-bottom: 16px;
+}
+
+/* Corner brackets, drawn from the accent rather than a full border, so a panel
+   reads as instrumentation without boxing the content in. */
+.vcc-framed {
+  position: relative;
+  background: var(--background-secondary);
+  border-radius: var(--radius-s);
+  padding: 12px 14px;
+}
+
+.vcc-framed::before,
+.vcc-framed::after {
+  content: \;
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  border-color: var(--vcc-accent);
+  border-style: solid;
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.vcc-framed::before {
+  top: 0;
+  left: 0;
+  border-width: 1px 0 0 1px;
+  border-radius: var(--radius-s) 0 0 0;
+}
+
+.vcc-framed::after {
+  bottom: 0;
+  right: 0;
+  border-width: 0 1px 1px 0;
+  border-radius: 0 0 var(--radius-s) 0;
+}
+
+/* ---- hero gauge ---- */
+
+.vcc-gauge-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.vcc-gauge-label {
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--vcc-accent);
+}
+
+.vcc-gauge-age {
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.vcc-gauge-body {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.vcc-gauge-pct {
+  font-size: 2.1rem;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--vcc-accent);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.vcc-gauge-pct-sign {
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin-left: 1px;
+  opacity: 0.75;
+}
+
+.vcc-gauge-track {
+  flex: 1;
+  min-width: 40px;
+  height: 14px;
+  border-radius: 2px;
+  background: var(--background-modifier-border);
+  overflow: hidden;
+}
+
+.vcc-gauge-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--vcc-accent-dim), var(--vcc-accent));
+  transition: width 240ms ease-out;
+}
+
+.vcc-gauge-tally {
+  text-align: right;
+  font-family: var(--font-monospace);
+  line-height: 1.15;
+  white-space: nowrap;
+}
+
+.vcc-gauge-tally-value {
+  font-size: var(--font-ui-medium);
+  font-weight: 700;
+  color: var(--text-normal);
+  font-variant-numeric: tabular-nums;
+}
+
+.vcc-gauge-tally-total {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+}
+
+.vcc-gauge-empty {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+
+/* ---- cards ---- */
+
+.vcc-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(84px, 1fr));
+  gap: 8px;
 }
 
 .vcc-card {
   background: var(--background-secondary);
   border: 1px solid var(--background-modifier-border);
-  border-radius: var(--radius-m);
-  padding: 10px 12px;
+  border-radius: var(--radius-s);
+  border-left: 3px solid var(--background-modifier-border);
+  padding: 9px 11px;
 }
 
 .vcc-card-warn {
-  border-left: 3px solid var(--text-warning);
+  border-left-color: var(--text-warning);
 }
 
 .vcc-card-label {
+  font-family: var(--font-monospace);
   font-size: var(--font-ui-smaller);
   color: var(--text-muted);
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .vcc-card-value {
   font-size: var(--font-ui-large);
-  font-weight: 600;
+  font-weight: 700;
   color: var(--text-normal);
   margin-top: 2px;
   font-variant-numeric: tabular-nums;
+}
+
+/* ---- latest edit ---- */
+
+.vcc-latest-label {
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-faint);
+  margin-bottom: 3px;
+}
+
+.vcc-latest-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.vcc-latest-name {
+  font-weight: 600;
+  color: var(--text-normal);
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vcc-latest-name:hover {
+  color: var(--vcc-accent);
+  text-decoration: underline;
+}
+
+.vcc-latest-age {
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.vcc-latest-path {
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  margin-top: 1px;
+}
+
+/* ---- section label ---- */
+
+.vcc-section-label {
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-faint);
+  margin-bottom: 6px;
 }
 
 /* ---- actions ---- */
@@ -146,6 +363,17 @@
   padding: 2px 8px;
 }
 
+/* Live phase of the run ("requesting", "tool_use"...), kept out of the
+   transcript so it updates in place instead of scrolling past. */
+.vcc-run-status {
+  margin-left: auto;
+  margin-right: 10px;
+  font-weight: 400;
+  font-family: var(--font-monospace);
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+}
+
 .vcc-output {
   margin: 0;
   max-height: 340px;
@@ -159,6 +387,39 @@
   background: var(--background-primary);
   border-radius: var(--radius-s);
   padding: 10px;
+}
+
+/* Each kind of streamed content gets its own weight, so reasoning, tool calls and
+   the answer stay tellable apart in one scrolling transcript. */
+
+.vcc-out-cmd {
+  color: var(--text-faint);
+}
+
+.vcc-out-text {
+  color: var(--text-normal);
+}
+
+.vcc-out-thinking {
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+.vcc-out-tool {
+  color: var(--text-accent);
+}
+
+/* Anything that was not valid JSON on the stream - shown, never swallowed. */
+.vcc-out-raw {
+  color: var(--text-muted);
+}
+
+.vcc-out-done {
+  color: var(--text-success);
+}
+
+.vcc-out-fail {
+  color: var(--text-error);
 }
 
 /* ---- confirm modal ---- */

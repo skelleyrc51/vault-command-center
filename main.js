@@ -1,11 +1,167 @@
 "use strict";
 
-const { Plugin, ItemView, Notice, Modal, FileSystemAdapter, setIcon } = require("obsidian");
-const { execFile } = require("child_process");
+// Obsidian only exists when Node runs inside the app. The line router further down
+// is pure and is exercised by `npm test`, where this require necessarily fails; the
+// class defaults keep module evaluation from throwing on `extends undefined`.
+let obsidian = {};
+try {
+  obsidian = require("obsidian");
+} catch (e) {
+  /* under test */
+}
+const {
+  Plugin = class {},
+  ItemView = class {},
+  Notice = class {},
+  Modal = class {},
+  FileSystemAdapter = class {},
+} = obsidian;
+const { spawn } = require("child_process");
 
 const VIEW_TYPE = "vault-command-center-view";
 const RUN_TIMEOUT_MS = 5 * 60 * 1000;
-const MAX_BUFFER = 8 * 1024 * 1024;
+
+// ---- Argument construction -------------------------------------------------
+// Read-only actions deny anything that would prompt, so they cannot touch the
+// vault. Writing actions get acceptEdits - file edits are approved, Bash and the
+// other shell tools still are not. The confirmation modal shows this argv
+// verbatim, so the mode is visible before the run is agreed to.
+
+const STREAM_ARGS = [
+  "--output-format",
+  "stream-json",
+  "--verbose",
+  "--include-partial-messages",
+];
+
+function buildArgs(action) {
+  const args = ["-p", action.prompt, ...STREAM_ARGS];
+  if (action.writes) {
+    args.push("--permission-mode", "acceptEdits");
+  } else {
+    args.push("--permission-mode", "manual", "--permission-prompts", "none");
+  }
+  return args;
+}
+
+// ---- Stream routing --------------------------------------------------------
+// `claude --output-format stream-json` emits one JSON object per line, and most of
+// it is noise: a single-word answer measured 85KB, of which system/init and
+// system/commands_changed alone were 72KB. routeLine keeps the parts a human needs
+// and drops the rest, returning null for anything not worth showing.
+
+function routeLine(line) {
+  const trimmed = line.trim();
+  if (!trimmed) return null;
+
+  let ev;
+  try {
+    ev = JSON.parse(trimmed);
+  } catch (e) {
+    // Not JSON. Show it rather than discard it - a crash or a PATH error arrives
+    // on stdout as plain text, and silently dropping it would fake a clean run.
+    return { kind: "raw", text: trimmed };
+  }
+
+  if (ev.type === "stream_event") {
+    const inner = ev.event || {};
+    if (inner.type === "content_block_delta") {
+      const delta = inner.delta || {};
+      if (delta.type === "text_delta") return { kind: "text", text: delta.text };
+      if (delta.type === "thinking_delta") return { kind: "thinking", text: delta.thinking };
+    }
+    // signature_delta and input_json_delta carry no text a human can read.
+    return null;
+  }
+
+  if (ev.type === "assistant") {
+    // Text already arrived delta by delta; only the tool calls are new here.
+    const content = (ev.message && ev.message.content) || [];
+    for (const block of content) {
+      if (block.type === "tool_use") return { kind: "tool", text: toolLabel(block) };
+    }
+    return null;
+  }
+
+  if (ev.type === "result") {
+    return {
+      kind: "result",
+      ok: !ev.is_error,
+      durationMs: ev.duration_ms,
+      costUsd: ev.total_cost_usd,
+    };
+  }
+
+  if (ev.type === "system" && ev.subtype === "status") {
+    return { kind: "status", text: ev.status };
+  }
+
+  return null;
+}
+
+// "Read(NVDA.md)" - enough to follow what the agent is touching without printing
+// an absolute path per call.
+const TOOL_ARG_KEYS = ["file_path", "path", "notebook_path", "pattern", "command", "query", "url"];
+
+function toolLabel(block) {
+  const input = block.input || {};
+  let arg = "";
+  for (const key of TOOL_ARG_KEYS) {
+    if (typeof input[key] === "string" && input[key]) {
+      arg = input[key];
+      break;
+    }
+  }
+  if (!arg) return block.name;
+
+  const parts = arg.split(/[\\\/]/);
+  if (parts.length > 1) arg = parts[parts.length - 1];
+  if (arg.length > 60) arg = arg.slice(0, 57) + "...";
+
+  return block.name + "(" + arg + ")";
+}
+
+// ---- Section inspection ----------------------------------------------------
+// Both read the metadata index only. `sections` lists every block in document
+// order with its line range, so "is there a paragraph between this heading and
+// the next one" is answerable without opening the file.
+
+function findHeadingLine(cache, name) {
+  if (!cache || !cache.headings) return -1;
+  const target = name.toLowerCase();
+  for (const h of cache.headings) {
+    if (String(h.heading).trim().toLowerCase() === target) return h.position.start.line;
+  }
+  return -1;
+}
+
+function sectionExists(cache, name) {
+  return findHeadingLine(cache, name) !== -1;
+}
+
+function sectionHasBody(cache, name) {
+  const start = findHeadingLine(cache, name);
+  if (start === -1 || !cache.sections) return false;
+
+  let next = Infinity;
+  for (const h of cache.headings) {
+    const line = h.position.start.line;
+    if (line > start && line < next) next = line;
+  }
+
+  return cache.sections.some(
+    (s) => s.type !== "heading" && s.position.start.line > start && s.position.start.line < next
+  );
+}
+
+function relativeAge(ms) {
+  const mins = Math.round((Date.now() - ms) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.round(hrs / 24)}d ago`;
+}
 
 /**
  * Actions are plain prompts handed to `claude -p` with the vault as cwd.
@@ -80,7 +236,8 @@ class CommandCenterView extends ItemView {
   }
 
   async onClose() {
-    if (this.child) this.child.kill();
+    // Closing the pane must not leave an orphaned claude process running.
+    if (this.child) killTree(this.child);
   }
 
   // ---- Metrics -------------------------------------------------------------
@@ -114,36 +271,103 @@ class CommandCenterView extends ItemView {
       }
     }
 
-    const newest = files.reduce((max, f) => Math.max(max, f.stat.mtime), 0);
+    // Coverage: of the notes that have a "## Thesis" heading, how many have
+    // anything written under it. Read from the index rather than from disk - a
+    // heading followed immediately by the next heading has an empty section,
+    // and cache.sections already says so. Re-rendering stays free.
+    let hasThesis = 0;
+    let filledThesis = 0;
+    for (const f of files) {
+      const cache = this.app.metadataCache.getFileCache(f);
+      if (!sectionExists(cache, "thesis")) continue;
+      hasThesis++;
+      if (sectionHasBody(cache, "thesis")) filledThesis++;
+    }
 
-    return { notes: files.length, broken, orphans, openTasks, doneTasks, newest };
+    let newest = null;
+    for (const f of files) {
+      if (!newest || f.stat.mtime > newest.stat.mtime) newest = f;
+    }
+
+    return {
+      notes: files.length,
+      broken,
+      orphans,
+      openTasks,
+      doneTasks,
+      hasThesis,
+      filledThesis,
+      newest,
+    };
   }
 
   renderMetrics() {
     if (!this.metricsEl) return;
-    this.metricsEl.empty();
     const m = this.computeMetrics();
 
+    // ---- hero gauge ----
+    this.gaugeEl.empty();
+    if (m.hasThesis > 0) {
+      const pct = Math.round((m.filledThesis / m.hasThesis) * 100);
+      const head = this.gaugeEl.createDiv({ cls: "vcc-gauge-head" });
+      head.createSpan({ cls: "vcc-gauge-label", text: "◈ Thesis coverage · Watchlist" });
+      head.createSpan({
+        cls: "vcc-gauge-age",
+        text: m.newest ? `last edit ${relativeAge(m.newest.stat.mtime)}` : "",
+      });
+
+      const body = this.gaugeEl.createDiv({ cls: "vcc-gauge-body" });
+      body.createDiv({ cls: "vcc-gauge-pct", text: `${pct}` }).createSpan({
+        cls: "vcc-gauge-pct-sign",
+        text: "%",
+      });
+
+      const track = body.createDiv({ cls: "vcc-gauge-track" });
+      track.createDiv({ cls: "vcc-gauge-fill" }).style.width = `${pct}%`;
+
+      const tally = body.createDiv({ cls: "vcc-gauge-tally" });
+      tally.createDiv({ cls: "vcc-gauge-tally-value", text: String(m.filledThesis) });
+      tally.createDiv({ cls: "vcc-gauge-tally-total", text: `/ ${m.hasThesis}` });
+    } else {
+      this.gaugeEl.createDiv({
+        cls: "vcc-gauge-empty",
+        text: "No notes with a ## Thesis section yet.",
+      });
+    }
+
+    // ---- cards ----
+    this.cardsEl.empty();
     const cards = [
       { label: "Notes", value: String(m.notes) },
       { label: "Broken links", value: String(m.broken), warn: m.broken > 0 },
       { label: "Orphans", value: String(m.orphans), warn: m.orphans > 0 },
       {
-        label: "Open tasks",
-        value: m.openTasks + m.doneTasks > 0 ? `${m.openTasks} / ${m.openTasks + m.doneTasks}` : "0",
+        label: "Tasks",
+        value:
+          m.openTasks + m.doneTasks > 0
+            ? `${m.doneTasks} / ${m.openTasks + m.doneTasks}`
+            : "0",
       },
     ];
-
     for (const c of cards) {
-      const card = this.metricsEl.createDiv({ cls: "vcc-card" + (c.warn ? " vcc-card-warn" : "") });
+      const card = this.cardsEl.createDiv({ cls: "vcc-card" + (c.warn ? " vcc-card-warn" : "") });
       card.createDiv({ cls: "vcc-card-label", text: c.label });
       card.createDiv({ cls: "vcc-card-value", text: c.value });
     }
 
-    if (this.updatedEl) {
-      this.updatedEl.setText(
-        m.newest ? `last edit ${new Date(m.newest).toLocaleString()}` : "empty vault"
-      );
+    // ---- latest edit ----
+    this.latestEl.empty();
+    if (m.newest) {
+      this.latestEl.createDiv({ cls: "vcc-latest-label", text: "Latest edit" });
+      const row = this.latestEl.createDiv({ cls: "vcc-latest-row" });
+      const name = row.createDiv({ cls: "vcc-latest-name", text: m.newest.basename });
+      name.addEventListener("click", () => this.app.workspace.openLinkText(m.newest.path, "", false));
+      row.createDiv({ cls: "vcc-latest-age", text: relativeAge(m.newest.stat.mtime) });
+      const parent = m.newest.parent && m.newest.parent.path;
+      this.latestEl.createDiv({
+        cls: "vcc-latest-path",
+        text: parent && parent !== "/" ? parent : "vault root",
+      });
     }
   }
 
@@ -155,12 +379,21 @@ class CommandCenterView extends ItemView {
     root.addClass("vcc-container");
 
     const header = root.createDiv({ cls: "vcc-header" });
+    header.createSpan({ cls: "vcc-rule" });
     header.createDiv({ cls: "vcc-title", text: "Vault Command Center" });
-    this.updatedEl = header.createDiv({ cls: "vcc-status" });
+    const refresh = header.createEl("button", { cls: "vcc-refresh", text: "↻" });
+    refresh.setAttribute("aria-label", "Recompute metrics");
+    refresh.addEventListener("click", () => this.renderMetrics());
 
+    // The hero panel and the card row are the two things that re-render on every
+    // index change, so they get stable containers rather than being rebuilt.
     this.metricsEl = root.createDiv({ cls: "vcc-metrics" });
+    this.gaugeEl = this.metricsEl.createDiv({ cls: "vcc-gauge vcc-framed" });
+    this.cardsEl = this.metricsEl.createDiv({ cls: "vcc-cards" });
+    this.latestEl = this.metricsEl.createDiv({ cls: "vcc-latest vcc-framed" });
     this.renderMetrics();
 
+    root.createDiv({ cls: "vcc-section-label", text: "Actions" });
     const actions = root.createDiv({ cls: "vcc-actions" });
     this.buttons = [];
     for (const action of ACTIONS) {
@@ -192,14 +425,10 @@ class CommandCenterView extends ItemView {
     const outPanel = root.createDiv({ cls: "vcc-panel" });
     const outHeader = outPanel.createDiv({ cls: "vcc-panel-header" });
     this.outTitle = outHeader.createSpan({ text: "Output" });
+    this.statusEl = outHeader.createSpan({ cls: "vcc-run-status" });
     this.cancelBtn = outHeader.createEl("button", { cls: "vcc-cancel", text: "Cancel" });
     this.cancelBtn.hide();
-    this.cancelBtn.addEventListener("click", () => {
-      if (this.child) {
-        this.child.kill();
-        this.appendOut("\n— cancelled —\n");
-      }
-    });
+    this.cancelBtn.addEventListener("click", () => this.cancel());
     this.outEl = outPanel.createEl("pre", { cls: "vcc-output" });
     this.outEl.setText("No run yet.");
   }
@@ -222,9 +451,56 @@ class CommandCenterView extends ItemView {
     else this.cancelBtn.hide();
   }
 
-  appendOut(text) {
-    this.outEl.setText(this.outEl.getText() + text);
-    this.outEl.scrollTop = this.outEl.scrollHeight;
+  // ---- Output ----------------------------------------------------------------
+  // Text arrives token by token, so each kind of content gets its own span rather
+  // than one growing string - that keeps thinking visually distinct from the
+  // answer without re-rendering the whole transcript on every delta.
+
+  append(cls, text) {
+    const atBottom =
+      this.outEl.scrollHeight - this.outEl.scrollTop - this.outEl.clientHeight < 40;
+
+    if (cls === "vcc-out-text" && this.lastTextEl) {
+      this.lastTextEl.setText(this.lastTextEl.getText() + text);
+    } else {
+      const span = this.outEl.createSpan({ cls, text });
+      this.lastTextEl = cls === "vcc-out-text" ? span : null;
+    }
+
+    // Only follow the tail if the reader was already at it; otherwise scrolling
+    // back to re-read something would be yanked away on the next token.
+    if (atBottom) this.outEl.scrollTop = this.outEl.scrollHeight;
+  }
+
+  // ---- Execution -------------------------------------------------------------
+
+  renderEvent(event) {
+    switch (event.kind) {
+      case "text":
+        return this.append("vcc-out-text", event.text);
+      case "thinking":
+        return this.append("vcc-out-thinking", event.text);
+      case "tool":
+        return this.append("vcc-out-tool", `\n⚙ ${event.text}\n`);
+      case "raw":
+        return this.append("vcc-out-raw", event.text + "\n");
+      case "status":
+        return this.statusEl && this.statusEl.setText(event.text);
+      case "result":
+        return this.append(
+          event.ok ? "vcc-out-done" : "vcc-out-fail",
+          `\n\n— ${event.ok ? "done" : "error"} in ${(event.durationMs / 1000).toFixed(1)}s` +
+            (typeof event.costUsd === "number" ? ` · $${event.costUsd.toFixed(4)}` : "") +
+            "\n"
+        );
+    }
+  }
+
+  cancel() {
+    if (!this.child) return;
+    this.cancelled = true;
+    killTree(this.child);
+    this.append("vcc-out-fail", "\n— cancelled —\n");
   }
 
   run(action) {
@@ -234,51 +510,117 @@ class CommandCenterView extends ItemView {
       return;
     }
     const cwd = adapter.getBasePath();
+    const args = buildArgs(action);
 
     this.setBusy(true);
+    this.cancelled = false;
+    this.lastTextEl = null;
+    this.sawOutput = false;
     this.outTitle.setText(`Output — ${action.label}`);
-    this.outEl.setText(`$ claude -p "${action.prompt}"\n\n`);
+    this.outEl.empty();
+    this.append("vcc-out-cmd", `$ claude ${args.join(" ")}\n\n`);
 
     const started = Date.now();
-    this.child = execFile(
-      "claude",
-      ["-p", action.prompt],
-      { cwd, timeout: RUN_TIMEOUT_MS, maxBuffer: MAX_BUFFER, windowsHide: true },
-      (err, stdout, stderr) => {
-        this.child = null;
-        const secs = ((Date.now() - started) / 1000).toFixed(1);
+    let child;
+    try {
+      // stdin must be closed, not inherited: `claude -p` waits ~3s for piped input
+      // before giving up, which shows as a stderr warning and delays every run.
+      child = spawn("claude", args, {
+        cwd,
+        windowsHide: true,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (e) {
+      this.fail(`could not start claude: ${e.message}`, action);
+      return;
+    }
+    this.child = child;
 
-        if (stdout) this.appendOut(stdout);
-        if (stderr) this.appendOut("\n[stderr]\n" + stderr);
+    this.timedOut = false;
+    const timer = setTimeout(() => {
+      this.timedOut = true;
+      killTree(child);
+    }, RUN_TIMEOUT_MS);
 
-        if (err) {
-          // Report the real failure rather than a success notice.
-          let hint = "";
-          if (err.code === "ENOENT") {
-            hint =
-              "\n\n'claude' was not found on PATH.\nObsidian inherits the PATH it was " +
-              "launched with - if you changed PATH after starting Obsidian, restart it.";
-          } else if (err.killed) {
-            hint = `\n\nRun exceeded ${RUN_TIMEOUT_MS / 1000}s and was terminated.`;
-          }
-          this.appendOut(`\n\n— failed after ${secs}s: ${err.message}${hint}\n`);
-          new Notice(`${action.label}: failed`);
-        } else if (!stdout.trim()) {
-          this.appendOut(
-            `\n— finished in ${secs}s with no output.\n\n` +
-              "Claude ran non-interactively, so any tool call needing approval had no way " +
-              "to get one. If this action was meant to change files, it likely did nothing.\n"
-          );
-          new Notice(`${action.label}: no output`);
-        } else {
-          this.appendOut(`\n— finished in ${secs}s\n`);
-          new Notice(`${action.label}: done`);
-        }
-
-        this.setBusy(false);
-        this.renderMetrics();
+    // stdout is NDJSON, but a chunk boundary can land mid-line, so hold the tail
+    // until its newline arrives rather than handing a half object to the parser.
+    let tail = "";
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      const lines = (tail + chunk).split("\n");
+      tail = lines.pop();
+      for (const line of lines) {
+        const event = routeLine(line);
+        if (!event) continue;
+        if (event.kind !== "status") this.sawOutput = true;
+        this.renderEvent(event);
       }
-    );
+    });
+
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk) => this.append("vcc-out-raw", chunk));
+
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      this.child = null;
+      const hint =
+        err.code === "ENOENT"
+          ? "\n'claude' was not found on PATH. Obsidian inherits the PATH it was " +
+            "launched with - if you changed PATH after starting Obsidian, restart it."
+          : "";
+      this.fail(`${err.message}${hint}`, action);
+    });
+
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      this.child = null;
+      if (tail) {
+        const event = routeLine(tail);
+        if (event) this.renderEvent(event);
+      }
+
+      const secs = ((Date.now() - started) / 1000).toFixed(1);
+
+      if (this.cancelled) {
+        new Notice(`${action.label}: cancelled`);
+      } else if (this.timedOut) {
+        this.fail(`run exceeded ${RUN_TIMEOUT_MS / 1000}s and was terminated`, action);
+      } else if (code !== 0) {
+        this.fail(`claude exited with code ${code} after ${secs}s`, action);
+      } else if (!this.sawOutput) {
+        // A clean exit with nothing to show is not a success worth announcing.
+        this.append(
+          "vcc-out-fail",
+          `\n— finished in ${secs}s with no output.\n\n` +
+            "Nothing came back on the stream. If this action was meant to change " +
+            "files, it did nothing.\n"
+        );
+        new Notice(`${action.label}: no output`);
+      } else {
+        new Notice(`${action.label}: done`);
+      }
+
+      if (this.statusEl) this.statusEl.setText("");
+      this.setBusy(false);
+      this.renderMetrics();
+    });
+  }
+
+  fail(message, action) {
+    this.append("vcc-out-fail", `\n— failed: ${message}\n`);
+    new Notice(`${action.label}: failed`);
+    if (this.statusEl) this.statusEl.setText("");
+    this.setBusy(false);
+  }
+}
+
+// child.kill() signals only the shim on Windows; claude.exe survives it and keeps
+// running (and billing). taskkill /T ends the tree.
+function killTree(child) {
+  if (process.platform === "win32") {
+    spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true });
+  } else {
+    child.kill("SIGTERM");
   }
 }
 
@@ -295,11 +637,16 @@ class ConfirmModal extends Modal {
     contentEl.createEl("p", {
       cls: "vcc-modal-note",
       text: this.action.writes
-        ? "This action may create or modify files in your vault."
-        : "This action is read-only.",
+        ? "Runs with --permission-mode acceptEdits: Claude may create and edit files " +
+          "in this vault without asking again. Shell commands are still refused."
+        : "Runs with permission prompts denied: nothing in the vault can be modified.",
     });
-    contentEl.createEl("p", { text: "Prompt sent to Claude:" });
-    contentEl.createEl("pre", { cls: "vcc-modal-prompt", text: this.action.prompt });
+    contentEl.createEl("p", { text: "Command:" });
+    contentEl.createEl("pre", {
+      cls: "vcc-modal-prompt",
+      // The exact argv, so the permission mode is visible before it is agreed to.
+      text: "claude " + buildArgs(this.action).join(" "),
+    });
 
     const row = contentEl.createDiv({ cls: "vcc-modal-buttons" });
     const cancel = row.createEl("button", { text: "Cancel" });
@@ -342,3 +689,6 @@ module.exports = class VaultCommandCenterPlugin extends Plugin {
 
   onunload() {}
 };
+
+// Exposed for tests; the plugin itself never reads this.
+module.exports.__test = { routeLine, buildArgs, sectionExists, sectionHasBody };
